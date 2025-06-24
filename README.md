@@ -18,9 +18,9 @@ cpanm Date::Parse Date::Format File::ChangeNotify DBI Try::Tiny Text::ANSITable
 
 ```
 cd ~/src/mtga_logs/
-  chmod +x mtgalog.pl
-  ln -s `pwd`/mtgalog.pl ~/bin/
-  ```
+chmod +x mtgalog.pl
+ln -s `pwd`/mtgalog.pl ~/bin/
+```
 
   ****modify* the $dir variable to location of Player.log***
 
