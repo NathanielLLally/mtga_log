@@ -12,13 +12,11 @@ and locate the Player.log file and modify the $dir variable to point to it, this
   host    all             all             127.0.0.1/32            trust
 ```
 
-`cpanm Date::Parse Date::Format File::ChangeNotify DBI Try::Tiny Text::ANSITable`
+```cpanm Date::Parse Date::Format File::ChangeNotify DBI Try::Tiny Text::ANSITable```
 
-```
-  cd ~/src/mtga_logs/
+```cd ~/src/mtga_logs/
   chmod +x mtgalog.pl
-  ln -s `pwd`/mtgalog.pl ~/bin/
-```
+  ln -s `pwd`/mtgalog.pl ~/bin/```
 
   ****modify* the $dir variable to location of Player.log***
 
