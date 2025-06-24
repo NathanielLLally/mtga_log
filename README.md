@@ -6,17 +6,19 @@ and locate the Player.log file and modify the $dir variable to point to it, this
 
 # install
 
-  if not already, install enable and start postgresql
+  if not already, install enable and start postgresql.
   modify connect string in the code or pg_hba.conf
 ```...
   host    all             all             127.0.0.1/32            trust
 ```
 
-  cpanm Date::Parse Date::Format File::ChangeNotify DBI Try::Tiny Text::ANSITable
+`cpanm Date::Parse Date::Format File::ChangeNotify DBI Try::Tiny Text::ANSITable`
 
+```
   cd ~/src/mtga_logs/
   chmod +x mtgalog.pl
   ln -s `pwd`/mtgalog.pl ~/bin/
+```
 
   ****modify* the $dir variable to location of Player.log***
 
