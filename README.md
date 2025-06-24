@@ -28,3 +28,5 @@ ln -s `pwd`/mtgalog.pl ~/bin/
  
   before during or after starting MTGA and playing some matches, just run mtgalog.pl in a terminal
 
+![Screenshot](screenshot.png "Screenshot")
+
