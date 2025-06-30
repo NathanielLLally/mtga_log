@@ -11,11 +11,14 @@ use Data::Dumper;
 
 my $json = JSON->new->allow_nonref->utf8;
 
-our $verbose = 0;
+our $verbose = 1;
 our $debug = 1;
 
 our $userId;
-our $userName = 'Xanatar';
+
+#  Logged in successfully- or first AuthenticateResponse
+our $userName;
+#= 'Xanatar';
 our $sessionId;
 our $matches;
 
@@ -26,21 +29,17 @@ our $dbh = DBI->connect("dbi:Pg:dbname=postgres;host=127.0.0.1", 'postgres', und
 
 #  make dB tables
 #
+open(SQL, "<mtga_schema.sql") || die "missing schema.sql $!";
+local $/;
+my $sql = <SQL>;
+close(SQL);
 try {
-    $dbh->do('create table mtga_deck_summary(_id int generated always as identity primary key, cid uuid not null, ev_name varchar(80), id uuid not null, sha256_hex varchar(255), name varchar(255), last_updated timestamp with time zone, last_played timestamp with time zone, format varchar(80) not null, win int, loss int, player varchar(16) not null, unique(player,cid,id));');
+    $dbh->do($sql);
 } catch {
-};
-try {
-    $dbh->do('create table mtga_deck(_id int generated always as identity primary key, id uuid not null, cardId int not null, quantity int not null, player varchar(16) not null, unique(player, id,cardId));');
-} catch {
-};
-
-try {
-    $dbh->do('create or replace view vw_mtga_deck_stats as (with totals as ( select player, sum(win+loss) as total, sum(win) as total_wins, sum(loss) as total_losses, ev_name, name from mtga_deck_summary group by player, name,ev_name) select sq.player, sq.ev_name, total as played, total_wins, total_losses, ((total_wins/total::float))::decimal(5,2) as twin_ratio, sq.name, sum(win) as wins, sum(loss) as losses, ((sum(win)/sum(win+loss)::float))::decimal(5,2) as win_ratio, max(last_updated) as modified from (select player, sha256_hex, last_updated, name, ev_name, win, loss from mtga_deck_summary order by name) sq join totals on sq.player = totals.player and sq.name = totals.name and sq.ev_name = totals.ev_name group by sq.player, sq.name, sq.ev_name, total, total_wins, total_losses, sha256_hex order by player,name);');
-} catch {
+  print "db error loading schema.sql: $_\n";
 };
 
-sub insert_deck
+sub insert_deck_from_course
 {
     my $c = shift || die 'insert_deck($course_json_data)';
 
@@ -81,13 +80,17 @@ sub insert_deck
 
         my $sth = $dbh->prepare("insert into mtga_deck_summary (player,sha256_hex,cid,name,id,last_played,last_updated,format, win, loss, ev_name) values (?,?,?,?,?,?,?,?,?,?,?) on conflict (player, cid, id) do nothing");
         try {
+            printf "mtga_deck_summary insert: %s %s %s %s\n", $userName, $c->{CourseId}, map { $summary->{$_} } qw/Name DeckId/;
             $sth->execute($userName, $sha256, $c->{CourseId}, map { $summary->{$_} } qw/Name DeckId LastPlayed LastUpdated Format win loss ev_name/);
         } catch {
             #            if ($_ =~ /
             die "uncaught DBI error: $_\n";
         };
-        $sth = $dbh->prepare("select * from mtga_deck where id = ?");
-        $sth->execute($id);
+
+=head2 check for existing cards in deck with id
+
+        $sth = $dbh->prepare("select * from mtga_deck where id = ? and sha256_hex = ?");
+        $sth->execute($id, $sha256);
         my $rs = $sth->fetchall_arrayref({});
         if ($#{$rs} > -1) {
             #
@@ -101,16 +104,27 @@ sub insert_deck
             };
         }
 
+=cut
+
         #  either way now insert deck data
         #
-        $sth = $dbh->prepare("insert into mtga_deck (player,id,cardid,quantity) values (?,?,?,?)");
+        $sth = $dbh->prepare("insert into mtga_deck (id,sha256_hex,cardid,quantity) values (?,?,?,?) on conflict (id,sha256_hex,cardid) do nothing");
         foreach my $card (sort { $a->{cardId} <=> $b->{cardId} } @$maindeck) {
             try {
-                $sth->execute($userName,$id,$card->{cardId}, $card->{quantity});
+                $sth->execute($userName,$id,$sha256, $card->{cardId}, $card->{quantity});
             } catch {
                 print "uncaught DBI error: $_\n";
             };
         }
+        try {
+          $sth = $dbh->prepare("insert into mtga_deck_attributes 
+            (id, player, sha256_hex, name, format, last_played, last_updated)
+            values (?,?,?,?,?,?,?)"
+          );
+          $sth->execute($id, $userName, $sha256, map { $summary->{$_} } qw/Name Format LastPlayed LastUpdated/);
+        } catch {
+          print "uncaught DBI error: $_\n";
+        };
         #}
     return $sha256;
 }
@@ -120,15 +134,63 @@ sub processData
     my $json = shift || die 'usage: processData $jsonData';
     my $data = decode_json($json);
 
-    foreach my $c (@{$data->{Courses}}) {
+    if (exists $data->{Courses}) {
+      foreach my $c (@{$data->{Courses}}) {
         printf "Course %s (%s):\n",$c->{InternalEventName},$c->{CourseId};
         my $stat = 0;
         $stat = $stat - ($c->{CurrentLosses} || 0);
         $stat = $stat + ($c->{CurrentWins} || 0);
         printf "\t\"%s\" (%s)\n",$c->{CourseDeckSummary}->{Name},$c->{CourseDeckSummary}->{DeckId};
 
-        my $sha256 = insert_deck($c);
+        my $sha256 = insert_deck_from_course($c);
         printf "\tdeck sha %s\n", $sha256;
+      } 
+    } elsif (exists $data->{InventoryInfo}) {
+      printf "Gems: %s Gold: %s\n", map { $data->{InventoryInfo}->{$_}; } qw/Gems Gold/;
+      #json: "Decks": { "deckId" : { "Companions":[], "Sideboard": [], "ReducedSideboard": [], "CommandZone" :[], "MainDeck" : [{quantity: i, cardId: i}]
+    }
+    if (exists $data->{DeckSummariesV2} and exists $data->{Decks}) {
+      my $decks = {};
+      foreach my $sum (@{$data->{DeckSummariesV2}}) {
+        my $deck = {};
+        foreach (qw/DeckId Name/) {
+          $deck->{$_} = $sum->{$_};
+        }
+        foreach (@{ $sum->{Attributes} }) {
+          $deck->{$_->{name}} = $_->{value};
+        }
+        $decks->{$deck->{DeckId}} = $deck;
+      }
+      foreach my $deckId (keys %{$data->{Decks}}) {
+        my $maindeck = $data->{Decks}->{$deckId}->{MainDeck};
+
+        #  sha256_hex of deck contents sorted by cardId like so
+        #
+        my $psv = join("|",
+          map { sprintf("%u:%u", $_->{cardId}, $_->{quantity}) }
+          sort { $a->{cardId} <=> $b->{cardId} } @$maindeck
+        );
+        my $sha256 = sha256_hex($psv);
+
+        my $sth = $dbh->prepare("insert into mtga_deck (id,sha256_hex,cardid,quantity) values (?,?,?,?)");
+        foreach my $card (sort { $a->{cardId} <=> $b->{cardId} } @$maindeck) {
+            try {
+                $sth->execute($deckId,$sha256,$card->{cardId}, $card->{quantity});
+            } catch {
+                print "uncaught DBI error: $_\n";
+            };
+        }
+
+        try {
+          $sth = $dbh->prepare("insert into mtga_deck_attributes 
+            (id, player, sha256_hex, name, format, last_played, last_updated)
+            values (?,?,?,?,?,?,?)"
+          );
+          $sth->execute($deckId, $userName, $sha256, map { $decks->{$deckId}->{$_} } qw/Name Format LastPlayed LastUpdated/);
+        } catch {
+          print "uncaught DBI error: $_\n";
+        };
+      }
     }
 }
 
@@ -138,6 +200,10 @@ sub parseLog
     while (my $line = <$in_fh>) {
         chomp $line;
         chop($line) if ($line =~ m/\r$/);
+        if ($line =~ /Logged in successfully\. Display Name: (.*?)$/) {
+          $userName = $1;
+          $userName =~ s/\#.*$//;
+        }
         if ($line =~ /\[\w+\](\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2} [AP]M): (.*?): (\w+)$/) {
             my ($timestamp_str, $post,$op) = ($1,$2,$3);
             if ($post =~ /^((Match to )?)(.*?)(( to Match)?)$/) {
@@ -180,6 +246,7 @@ sub parseLog
               authenticateResponse => sub {
                 $sessionId = $data->{lcfirst($op)}->{sessionId};
                 $userName = $data->{lcfirst($op)}->{screenName};
+                #  take from Logged in successfully. message not this one
               },
               clientToGremessage => sub {
                 my $type = $data->{payload}->{type};
@@ -238,11 +305,12 @@ sub parseLog
               clientToGreuimessage => sub {
               },
             };
-            print "$formatted_timestamp op: $op username: $userName userId: $userId sessionId: $sessionId\n";# if ($verbose);
             if (exists $ops->{lcfirst($op)}) {
+              print "$formatted_timestamp op: $op\n" if ($verbose);
               if (defined $ops->{lcfirst($op)} and defined $data) {
                 $ops->{lcfirst($op)}->();
               }
+              print "^^^ username: $userName userId: $userId sessionId: $sessionId\n" if ($verbose);
             } else {
               print "unknown operand $op!\n";
             }
@@ -264,13 +332,19 @@ sub parseLog
             if ($r =~ /\{.*\}/) {
                 if ($debug) {
                   my $f = "/tmp/$op.$id.json";
-                  open OUT, ">$f:encoding(UTF-8)";
+                  open OUT, ">$f";
+                  # :encoding(UTF-8)";
                   #print OUT JSON->new->utf8->pretty->encode($r);
                   print OUT $json->pretty->encode( decode_json($r) );
                   close OUT;
                   print "wrote $f\n";
                 }
                 if ($op eq "EventGetCoursesV2" and defined $userName) {
+                  print "processData\n";
+                  processData($r)
+                }
+                if ($op eq "StartHook" and defined $userName) {
+                  print "processData\n";
                   processData($r)
                 }
             } else {
@@ -297,8 +371,8 @@ sub printStats
   my @f = qw/player ev_name played total_wins total_losses twin_ratio name wins losses win_ratio modified/;
 
   my @h = @f;
-  $h[4] = 'twin_pct';
-  $h[8] = 'win_pct';
+  $h[5] = 'twin_pct';
+  $h[9] = 'win_pct';
   $t->columns([@h]);
   $t->set_column_style('twin_pct'   , formats => [[num=>{decimal_digits=>2, style=>'percent'}]]);
   $t->set_column_style('win_pct'   , formats => [[num=>{decimal_digits=>2, style=>'percent'}]]);
