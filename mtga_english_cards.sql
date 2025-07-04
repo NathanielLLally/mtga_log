@@ -6,6 +6,7 @@ select GrpId,
 ( select string_agg(Loc,',') as SubType from Localizations_enUS les join Enums e on e.LocId = les.LocId join json_each('["' || replace(c.Subtypes,',','","') || '"]') v on e.Value = v.value where e.Type = 'SubType') as SubType,
 ( select string_agg(Loc,',') as SuperType from Localizations_enUS les join Enums e on e.LocId = les.LocId join json_each('["' || replace(c.Supertypes,',','","') || '"]') v on e.Value = v.value where e.Type = 'SuperType') as SuperType,
 (  select string_agg(Loc,',') as Colors from Localizations_enUS les join Enums e on e.LocId = les.LocId join json_each('["' || replace(c.Colors,',','","') || '"]') v on e.Value = v.value where e.Type = 'Color' ) as Colors,
+(  select string_agg(Loc,',') as ColorIdentity from Localizations_enUS les join Enums e on e.LocId = les.LocId join json_each('["' || replace(c.ColorIdentity,',','","') || '"]') v on e.Value = v.value where e.Type = 'CardColor' ) as ColorIdentity,
        OldSchoolManaText,
        Power, 
        Toughness
