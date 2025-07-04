@@ -11,8 +11,8 @@ use Data::Dumper;
 
 my $json = JSON->new->allow_nonref->utf8;
 
-our $verbose = 1;
-our $debug = 1;
+our $verbose = 0;
+our $debug = 0;
 
 our $userId;
 
@@ -30,9 +30,12 @@ our $dbh = DBI->connect("dbi:Pg:dbname=postgres;host=127.0.0.1", 'postgres', und
 #  make dB tables
 #
 open(SQL, "<mtga_schema.sql") || die "missing schema.sql $!";
-local $/;
-my $sql = <SQL>;
-close(SQL);
+my $sql;
+{
+  local $/;
+  $sql = <SQL>;
+  close(SQL);
+}
 try {
     $dbh->do($sql);
 } catch {
@@ -111,7 +114,7 @@ sub insert_deck_from_course
         $sth = $dbh->prepare("insert into mtga_deck (id,sha256_hex,cardid,quantity) values (?,?,?,?) on conflict (id,sha256_hex,cardid) do nothing");
         foreach my $card (sort { $a->{cardId} <=> $b->{cardId} } @$maindeck) {
             try {
-                $sth->execute($userName,$id,$sha256, $card->{cardId}, $card->{quantity});
+                $sth->execute($id,$sha256, $card->{cardId}, $card->{quantity});
             } catch {
                 print "uncaught DBI error: $_\n";
             };
@@ -119,7 +122,7 @@ sub insert_deck_from_course
         try {
           $sth = $dbh->prepare("insert into mtga_deck_attributes 
             (id, player, sha256_hex, name, format, last_played, last_updated)
-            values (?,?,?,?,?,?,?)"
+            values (?,?,?,?,?,?,?) on conflict (id, sha256_hex) do update set name = excluded.name,format=excluded.format,last_played=excluded.last_played,last_updated=excluded.last_updated"
           );
           $sth->execute($id, $userName, $sha256, map { $summary->{$_} } qw/Name Format LastPlayed LastUpdated/);
         } catch {
@@ -172,7 +175,7 @@ sub processData
         );
         my $sha256 = sha256_hex($psv);
 
-        my $sth = $dbh->prepare("insert into mtga_deck (id,sha256_hex,cardid,quantity) values (?,?,?,?)");
+        my $sth = $dbh->prepare("insert into mtga_deck (id,sha256_hex,cardid,quantity) values (?,?,?,?) on conflict(id, sha256_hex, cardid) do nothing");
         foreach my $card (sort { $a->{cardId} <=> $b->{cardId} } @$maindeck) {
             try {
                 $sth->execute($deckId,$sha256,$card->{cardId}, $card->{quantity});
@@ -184,7 +187,7 @@ sub processData
         try {
           $sth = $dbh->prepare("insert into mtga_deck_attributes 
             (id, player, sha256_hex, name, format, last_played, last_updated)
-            values (?,?,?,?,?,?,?)"
+            values (?,?,?,?,?,?,?) on conflict (id, sha256_hex) do nothing "
           );
           $sth->execute($deckId, $userName, $sha256, map { $decks->{$deckId}->{$_} } qw/Name Format LastPlayed LastUpdated/);
         } catch {
@@ -357,7 +360,7 @@ sub parseLog
 
 sub printStats
 {
-  my $sth = $dbh->prepare("select * from  vw_mtga_deck_stats");
+  my $sth = $dbh->prepare("select * from  vw_mtga_deck_stats order by player,ev_name, name");
   $sth->execute();
   my $rs = $sth->fetchall_arrayref({});
 
@@ -424,7 +427,7 @@ my $watcher = File::ChangeNotify->instantiate_watcher(
 );
 
 my $size = -s $logfile;
-print "filesize $size\n" if ($verbose);
+print "$logfile\nfilesize $size\n" if ($verbose);
 parseLog($logfile);
 parseMTGAlog::printStats;
 #while (my @events = $watcher->wait_for_events ) {
@@ -438,9 +441,13 @@ do {
             print "  File: " . $event->path . ", Type: " . $event->type;
             print " size ".-s $event->path;
             print "\n";
-            parseLog($event->path, $size);
-            alarm(5);
-            $size = $newsize;
+            try {
+              parseLog($event->path, $size);
+              alarm(5);
+              $size = $newsize;
+            } catch {
+              print "parse error: $_\nwaiting for next size increase\n";
+            };
         }
     }
     usleep 1000;
